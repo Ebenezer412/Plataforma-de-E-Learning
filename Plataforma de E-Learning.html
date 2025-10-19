@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plataforma E-Learning</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuração da Fonte Inter (Padrão) -->
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+    <!-- Configuração e Imports do Firebase -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Firebase Initialization
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        // setLogLevel('Debug'); // Uncomment for debugging Firebase
+
+        // ===================================
+        // === VARIÁVEIS DE ESTADO GLOBAL ===
+        // ===================================
+        window.userId = null;
+        window.db = db;
+        window.cursos = [
+            { id: 1, titulo: "JavaScript Moderno (ES6+)", descricao: "Fundamentos, promessas e async/await.", imagem: "https://placehold.co/400x200/4c7cff/ffffff?text=JavaScript", liçoes: ["Setup", "Variáveis", "Funções", "Assincronismo"], concluido: false },
+            { id: 2, titulo: "CSS Avançado e Responsivo", descricao: "Domine Flexbox, Grid e layout mobile.", imagem: "https://placehold.co/400x200/00bcd4/ffffff?text=CSS+Layout", liçoes: ["Flexbox", "Grid", "Media Queries", "Performance"], concluido: false },
+            { id: 3, titulo: "Estruturas de Dados em JS", descricao: "Arrays, Maps, Stacks e Filas implementadas.", imagem: "https://placehold.co/400x200/9c27b0/ffffff?text=Estruturas", liçoes: ["Arrays", "Objetos", "Pilhas/Filas", "Algoritmos"], concluido: false },
+            { id: 4, titulo: "Introdução ao Figma para UI/UX", descricao: "Crie designs e protótipos de alta fidelidade.", imagem: "https://placehold.co/400x200/ff9800/ffffff?text=Figma+UI", liçoes: ["Introdução", "Componentes", "Prototipagem", "Colaboração"], concluido: false }
+        ];
+
+        // =================================
+        // === FUNÇÕES DO FIREBASE/AUTH ===
+        // =================================
+
+        // 1. Configuração da Autenticação
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                window.userId = user.uid;
+            } else {
+                try {
+                    // Tenta autenticar com o token personalizado do ambiente
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        // Ou assina anonimamente como fallback
+                        await signInAnonymously(auth);
+                    }
+                } catch (error) {
+                    console.error("Erro na Autenticação Firebase:", error);
+                    // Se a autenticação falhar, usa um ID de convidado local
+                    window.userId = 'guest-' + Math.random().toString(36).substring(2, 8);
+                }
+            }
+            
+            // Depois de ter o userId, inicializa a aplicação
+            if (window.userId) {
+                document.getElementById('user-info').classList.remove('hidden');
+                document.getElementById('user-id-display').textContent = window.userId;
+                
+                // Agora que o usuário está pronto, configuramos o listener do Firestore
+                setupFirestoreListener();
+            }
+        });
+
+        // 2. Listener do Firestore para Status de Conclusão
+        function setupFirestoreListener() {
+            // Caminho da coleção privada do usuário para cursos concluídos
+            const path = `artifacts/${appId}/users/${window.userId}/completed_courses`;
+            const q = query(collection(window.db, path));
+
+            onSnapshot(q, (snapshot) => {
+                const idsConcluidos = [];
+                snapshot.forEach((doc) => {
+                    // Assumimos que o ID do documento é o ID do curso
+                    idsConcluidos.push(parseInt(doc.id)); 
+                });
+
+                // Atualiza o estado global dos cursos
+                window.cursos.forEach(curso => {
+                    curso.concluido = idsConcluidos.includes(curso.id);
+                });
+
+                // Rerenderiza a lista de cursos na UI
+                renderizarListaCursos();
+                
+                // Se estiver na página de detalhes, atualiza também
+                if (window.cursoSelecionadoId) {
+                    const cursoAtualizado = window.cursos.find(c => c.id === window.cursoSelecionadoId);
+                    if (cursoAtualizado) {
+                        atualizarBotaoConclusao(cursoAtualizado);
+                    }
+                }
+            }, (error) => {
+                console.error("Erro ao escutar o Firestore:", error);
+                // Fallback: renderiza apenas a lista estática se houver erro
+                renderizarListaCursos();
+            });
+        }
+        
+        // 3. Salva o status de conclusão no Firestore
+        window.marcarCursoConcluido = async () => {
+            if (!window.cursoSelecionadoId || !window.userId) return;
+
+            const curso = window.cursos.find(c => c.id === window.cursoSelecionadoId);
+            if (!curso || curso.concluido) return;
+
+            try {
+                const path = `artifacts/${appId}/users/${window.userId}/completed_courses`;
+                const docRef = doc(window.db, path, String(curso.id));
+                
+                // Cria um documento vazio, o ID do documento é o ID do curso
+                await setDoc(docRef, { concluido: true, timestamp: new Date() });
+                // A UI será atualizada automaticamente pelo onSnapshot listener
+            } catch (error) {
+                console.error("Erro ao salvar no Firestore:", error);
+                // Exibir erro amigável na UI se necessário
+            }
+        };
+
+
+        // =================================
+        // === FUNÇÕES DE RENDERIZAÇÃO UI ===
+        // =================================
+        
+        // Seletores de Elementos
+        const listaCursosEl = document.getElementById('lista-cursos');
+        const paginaInicialEl = document.getElementById('pagina-inicial');
+        const detalhesCursoEl = document.getElementById('detalhes-curso');
+        const detalhesTituloEl = document.getElementById('detalhes-titulo');
+        const detalhesDescricaoEl = document.getElementById('detalhes-descricao');
+        const detalhesLicoesEl = document.getElementById('detalhes-licoes');
+        const btnMarcarConcluido = document.getElementById('btn-marcar-concluido');
+        const btnVoltar = document.getElementById('btn-voltar');
+        const mensagemConcluidoEl = document.getElementById('mensagem-concluido');
+        
+        window.cursoSelecionadoId = null;
+
+        function renderizarListaCursos() {
+            listaCursosEl.innerHTML = '';
+            
+            window.cursos.forEach(curso => {
+                const isConcluido = curso.concluido;
+                const statusColor = isConcluido ? 'border-green-500' : 'border-blue-500';
+                const statusBadge = isConcluido 
+                    ? '<span class="bg-green-500 text-white text-xs font-semibold px-3 py-1 rounded-full shadow-md">CONCLUÍDO &#x2705;</span>' 
+                    : '<span class="bg-gray-200 text-gray-700 text-xs font-semibold px-3 py-1 rounded-full">EM ANDAMENTO</span>';
+
+                const cartao = document.createElement('div');
+                cartao.className = `cartao-curso bg-white rounded-xl shadow-lg hover:shadow-2xl transition duration-300 transform hover:-translate-y-1 overflow-hidden cursor-pointer border-l-4 ${statusColor}`;
+                cartao.dataset.cursoId = curso.id; 
+
+                cartao.innerHTML = `
+                    <img src="${curso.imagem}" alt="Imagem do curso: ${curso.titulo}" class="w-full h-32 object-cover">
+                    <div class="p-5">
+                        <h3 class="text-xl font-bold text-gray-800 mb-2">${curso.titulo}</h3>
+                        <p class="text-gray-600 text-sm mb-4">${curso.descricao}</p>
+                        ${statusBadge}
+                    </div>
+                `;
+                
+                cartao.addEventListener('click', () => mostrarDetalhesCurso(curso.id));
+                listaCursosEl.appendChild(cartao);
+            });
+        }
+
+        function mostrarDetalhesCurso(id) {
+            const curso = window.cursos.find(c => c.id === id);
+            if (!curso) return;
+
+            window.cursoSelecionadoId = id;
+            detalhesTituloEl.textContent = curso.titulo;
+            detalhesDescricaoEl.textContent = curso.descricao;
+            
+            detalhesLicoesEl.innerHTML = curso.liçoes.map(licao => 
+                `<li class="flex items-center text-gray-700 border-b border-gray-200 last:border-b-0 py-3">
+                    <svg class="w-5 h-5 text-blue-500 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span>${licao}</span>
+                </li>`
+            ).join('');
+            
+            atualizarBotaoConclusao(curso);
+
+            paginaInicialEl.classList.add('hidden');
+            detalhesCursoEl.classList.remove('hidden');
+        }
+
+        function atualizarBotaoConclusao(curso) {
+            if (curso.concluido) {
+                btnMarcarConcluido.classList.add('hidden');
+                mensagemConcluidoEl.classList.remove('hidden');
+            } else {
+                btnMarcarConcluido.classList.remove('hidden');
+                mensagemConcluidoEl.classList.add('hidden');
+            }
+        }
+
+        function voltarParaLista() {
+            window.cursoSelecionadoId = null;
+            detalhesCursoEl.classList.add('hidden');
+            paginaInicialEl.classList.remove('hidden');
+            renderizarListaCursos(); 
+        }
+
+        // =======================
+        // === Event Listeners ===
+        // =======================
+        btnMarcarConcluido.addEventListener('click', window.marcarCursoConcluido);
+        btnVoltar.addEventListener('click', voltarParaLista);
+
+        // Inicialização: a renderização inicial é chamada dentro do setupFirestoreListener, após a autenticação.
+        
+    </script>
+    
+    <!-- === ESTRUTURA HTML COM TAILWIND === -->
+
+    <!-- Cabeçalho Moderno com Autenticação (Item 3) -->
+    <header class="bg-blue-600 shadow-xl">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+            <h1 class="text-3xl font-extrabold text-white">Plataforma E-Learning</h1>
+            
+            <!-- Info do Usuário e Botões (Funcional) -->
+            <div id="user-info" class="flex items-center space-x-4 hidden">
+                <div class="text-sm text-white bg-blue-700 px-3 py-1 rounded-full flex items-center">
+                    <!-- Icone de Usuário -->
+                    <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clip-rule="evenodd"></path></svg>
+                    <!-- UID do Usuário Logado/Anônimo -->
+                    <span class="font-medium">UID: <span id="user-id-display" class="truncate max-w-xs inline-block">Carregando...</span></span>
+                </div>
+                <!-- Botão de Sair/Logout Simulado (funcionalidade opcional, mas importante para UI) -->
+                <button onclick="alert('Funcionalidade de Logout simulada. Para sessões reais, use um provedor de login como Google/Email.')"
+                        class="px-4 py-2 bg-red-500 text-white text-sm font-semibold rounded-lg hover:bg-red-600 transition duration-150 shadow-md focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-opacity-75">
+                    Sair
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <div class="container max-w-7xl mx-auto mt-8 px-4 sm:px-6 lg:px-8">
+        <!-- SEÇÃO 1: Página Inicial (Lista de Cursos) -->
+        <section id="pagina-inicial" class="pb-10">
+            <h2 class="text-3xl font-bold text-gray-800 mb-6 border-b pb-2">Cursos Disponíveis</h2>
+            <div id="lista-cursos" class="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                <!-- Cartões de curso injetados pelo JS -->
+                <div class="col-span-full text-center text-gray-500 py-10" id="loading-message">
+                    Carregando cursos e status de progresso...
+                </div>
+            </div>
+        </section>
+
+        <!-- SEÇÃO 2: Página de Detalhes do Curso (Oculta por padrão) -->
+        <section id="detalhes-curso" class="bg-white p-6 md:p-10 rounded-xl shadow-2xl hidden">
+            <button id="btn-voltar" class="btn bg-gray-300 text-gray-800 hover:bg-gray-400 focus:ring-gray-300 px-4 py-2 text-sm mb-6">
+                &larr; Voltar para a Lista
+            </button>
+
+            <h2 id="detalhes-titulo" class="text-4xl font-extrabold text-blue-600 mb-3"></h2>
+            <p id="detalhes-descricao" class="text-gray-600 mb-8 text-lg"></p>
+
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Coluna de Lições -->
+                <div class="md:col-span-2">
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-4 border-b pb-2">Conteúdo do Curso</h3>
+                    <ul id="detalhes-licoes" class="lista-licoes divide-y divide-gray-100">
+                        <!-- As lições serão injetadas aqui -->
+                    </ul>
+                </div>
+
+                <!-- Coluna de Ações/Progresso -->
+                <div class="md:col-span-1 bg-gray-50 p-6 rounded-lg shadow-inner">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-4">Seu Progresso</h3>
+                    
+                    <p id="mensagem-concluido" class="status-concluido bg-green-500 text-white p-3 rounded-lg text-center font-bold shadow-lg hidden">
+                        &#x2705; Parabéns! Curso Concluído
+                    </p>
+
+                    <!-- Botão de Conclusão -->
+                    <button id="btn-marcar-concluido" onclick="marcarCursoConcluido()"
+                            class="w-full mt-4 btn bg-blue-600 text-white hover:bg-blue-700 focus:ring-4 focus:ring-blue-300 transition duration-150">
+                        Marcar como Concluído
+                    </button>
+                    <p class="text-sm text-gray-500 mt-2 text-center">Isso será salvo no seu perfil.</p>
+                </div>
+            </div>
+        </section>
+    </div>
+
+</body>
+</html>
